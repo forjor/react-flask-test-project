@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+*.pyo
+*.db
+tests
+*.md
+.pytest_cache

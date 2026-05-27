@@ -1,0 +1,52 @@
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 2rem 1rem;
+}
+
+.app-header {
+  text-align: center;
+  margin-bottom: 2.5rem;
+}
+
+.app-header h1 {
+  font-size: 2.5rem;
+  font-weight: 700;
+  color: #2d3748;
+}
+
+.subtitle {
+  margin-top: 0.5rem;
+  color: #718096;
+  font-size: 1.1rem;
+}
+
+.add-section {
+  margin-bottom: 2rem;
+}
+
+.error-banner {
+  background: #fed7d7;
+  border: 1px solid #fc8181;
+  color: #c53030;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-bottom: 1.5rem;
+}
+
+.status-text {
+  text-align: center;
+  color: #718096;
+  font-size: 1.1rem;
+  padding: 3rem 0;
+}
+
+.empty-state {
+  font-style: italic;
+}
+
+.cat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.5rem;
+}

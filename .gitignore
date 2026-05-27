@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output
+frontend/dist/
+frontend/build/
+
+# Test artifacts
+frontend/playwright-report/
+frontend/test-results/
+frontend/screenshots/
+artifacts/
+
+# Python
+backend/__pycache__/
+backend/*.pyc
+backend/*.pyo
+backend/cats.db
+
+# OS
+.DS_Store
+
+# Local scratch
+ignored-scratch/
