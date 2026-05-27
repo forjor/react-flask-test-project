@@ -93,7 +93,7 @@ jobs:
             dir=$(basename "$(dirname "$video")")
             name="${dir%-chromium}"
             VIDEO_ROWS="${VIDEO_ROWS}| \`${name}\` |
-"
+          "
           done < <(find frontend/test-results -name "*.webm" 2>/dev/null | sort)
 
           cat > /tmp/pr-comment.md <<COMMENT
