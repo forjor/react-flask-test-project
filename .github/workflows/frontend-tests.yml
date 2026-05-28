@@ -11,8 +11,7 @@ jobs:
     if: startsWith(github.head_ref, 'test/')
     runs-on: ubuntu-latest
     permissions:
-      contents: write      # REQUIRED to create a release and upload the video asset
-      pull-requests: write # Required to post the PR comment
+      pull-requests: write # Required to post the PR comment and upload issue assets
 
     steps:
       - name: Checkout
@@ -64,7 +63,6 @@ jobs:
         run: |
           LOCAL_VIDEO_PATH="artifacts/demo/demo.webm"
           ASSET_NAME="pr-${PR_NUMBER}-demo.webm"
-          RELEASE_TAG="automated-pr-assets"
 
           if [ ! -f "$LOCAL_VIDEO_PATH" ]; then
             echo "No demo video found, skipping PR comment."
@@ -80,26 +78,27 @@ jobs:
             "$COMPRESSED" 2>/dev/null \
             || cp "$LOCAL_VIDEO_PATH" "$COMPRESSED"
 
-          # Upload to issue assets API — returns a user-attachments URL that renders inline in PR comments
+          # Upload to GitHub's issue assets endpoint — this is what the web UI drag-drop uses and
+          # is the only route that produces a https://github.com/user-attachments/assets/ URL,
+          # which GitHub will render as an inline video player in PR comments.
+          echo "Uploading video to GitHub issue assets API..."
           UPLOAD_RESPONSE=$(curl -s -X POST \
-            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "Content-Type: video/webm" \
             "https://uploads.github.com/repos/$REPO/issues/$PR_NUMBER/assets?name=$ASSET_NAME" \
             --data-binary @"$COMPRESSED")
-          VIDEO_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c \
-            "import sys,json; d=json.load(sys.stdin); print(d.get('asset_url',''))" 2>/dev/null || echo "")
+          echo "Upload response: $UPLOAD_RESPONSE"
 
-          # Fallback: store in a dedicated prerelease used as a "storage locker"
-          if [ -z "$VIDEO_URL" ]; then
-            gh release view "$RELEASE_TAG" > /dev/null 2>&1 \
-              || gh release create "$RELEASE_TAG" \
-                   --title "Automated PR Assets" \
-                   --notes "Storage locker for automated PR assets." \
-                   --prerelease
-            gh release upload "$RELEASE_TAG" "$COMPRESSED" --clobber
-            VIDEO_URL="https://github.com/$REPO/releases/download/$RELEASE_TAG/$ASSET_NAME"
-          fi
+          VIDEO_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get('asset_url') or d.get('url') or d.get('browser_download_url') or '')
+except:
+    print('')
+" 2>/dev/null)
+          echo "Extracted video URL: $VIDEO_URL"
 
           # Status line
           if [ "$TESTS_OUTCOME" = "success" ]; then
@@ -110,13 +109,17 @@ jobs:
             STATUS_TEXT="Tests failed"
           fi
 
-          # Build and post comment with inline video
+          # Build and post comment — embed inline if upload succeeded, otherwise link to the run
           {
             echo "## ${STATUS_ICON} Demo Recording — ${STATUS_TEXT}"
             echo ""
-            echo "<video src=\"${VIDEO_URL}\" controls muted width=\"800\"></video>"
-            echo ""
-            echo "[Direct link](${VIDEO_URL}) &nbsp;|&nbsp; [Run #${RUN_NUMBER}](${RUN_URL})"
+            if [ -n "$VIDEO_URL" ]; then
+              echo "<video src=\"${VIDEO_URL}\" controls muted width=\"800\"></video>"
+              echo ""
+              echo "[Direct link](${VIDEO_URL}) &nbsp;|&nbsp; [Run #${RUN_NUMBER}](${RUN_URL})"
+            else
+              echo "> Video upload failed — see [Run #${RUN_NUMBER}](${RUN_URL}) for the recording artifact."
+            fi
           } > /tmp/pr_comment.md
 
           gh pr comment "$PR_NUMBER" --body-file /tmp/pr_comment.md
