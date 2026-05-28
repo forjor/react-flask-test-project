@@ -109,8 +109,7 @@ jobs:
             RESPONSE=$(curl -sS \
               -H "Accept: application/vnd.github+json" \
               -H "Authorization: Bearer $GH_TOKEN" \
-              -H "Content-Type: video/webm" \
-              --data-binary "@$DEMO_VIDEO" \
+              -F "data=@$DEMO_VIDEO;type=video/webm" \
               "https://uploads.github.com/repos/$OWNER/$REPO/issues/$PR_NUM/assets?name=demo.webm")
 
             VIDEO_URL=$(echo "$RESPONSE" | jq -r '.url // empty' 2>/dev/null)
