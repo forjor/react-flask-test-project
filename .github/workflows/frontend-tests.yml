@@ -98,9 +98,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
-          # Update to the local path of your newly generated video
           LOCAL_VIDEO_PATH: "artifacts/demo/demo.webm"
-          # A generic tag to group all automated PR assets
           RELEASE_TAG: "automated-pr-assets"
         run: |
           if [ "${{ steps.tests.outcome }}" = "success" ]; then
@@ -109,7 +107,8 @@ jobs:
             BADGE="❌ Tests failed"
           fi
 
-          VIDEO_URL=""
+          EMBED_URL=""
+          FALLBACK_URL=""
           if [ -f "$LOCAL_VIDEO_PATH" ]; then
             # Compress to reduce file size for faster loading
             COMPRESSED="artifacts/demo/demo-upload.webm"
@@ -120,47 +119,56 @@ jobs:
               "$COMPRESSED" 2>/dev/null \
               && LOCAL_VIDEO_PATH="$COMPRESSED"
 
-            # 1. Rename the video file to include the PR number to prevent collisions
             ASSET_NAME="pr-${PR_NUMBER}-demo.webm"
             cp "$LOCAL_VIDEO_PATH" "$ASSET_NAME"
 
-            # 2. Ensure our "storage locker" release exists.
-            # We use --prerelease so it doesn't trigger "Latest Release" notifications.
+            # Upload to release as a downloadable backup
             gh release view "$RELEASE_TAG" > /dev/null 2>&1 || \
               gh release create "$RELEASE_TAG" \
                 --title "Automated PR Assets" \
                 --notes "Storage locker for automated PR videos and images." \
                 --prerelease
-
-            # 3. Upload the asset (--clobber overwrites previous uploads for this specific PR)
             gh release upload "$RELEASE_TAG" "$ASSET_NAME" --clobber
+            FALLBACK_URL="https://github.com/$REPO/releases/download/$RELEASE_TAG/$ASSET_NAME"
 
-            # 4. Construct the direct download URL for the release asset
-            VIDEO_URL="https://github.com/$REPO/releases/download/$RELEASE_TAG/$ASSET_NAME"
+            # Upload via GitHub's issue asset API to get a user-attachments URL.
+            # GitHub PR comments only render <video> tags for user-attachments URLs;
+            # release asset URLs are stripped by the markdown renderer.
+            UPLOAD_RESPONSE=$(curl -s -X POST \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: video/webm" \
+              "https://uploads.github.com/repos/$REPO/issues/$PR_NUMBER/assets?name=$ASSET_NAME" \
+              --data-binary @"$ASSET_NAME")
+
+            EMBED_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c \
+              "import sys,json; d=json.load(sys.stdin); print(d.get('asset_url',''))" 2>/dev/null || echo "")
           else
             echo "::warning::artifacts/demo/demo.webm not found — demo step may have failed"
           fi
 
-          # 5. Create the markdown body
-          if [ -n "$VIDEO_URL" ]; then
-            DEMO_SECTION="<video src=\"$VIDEO_URL\" controls=\"controls\" muted=\"muted\" width=\"600\"></video>"
+          if [ -n "$EMBED_URL" ]; then
+            DEMO_SECTION="<video src=\"$EMBED_URL\" controls=\"controls\" muted=\"muted\" width=\"600\"></video>"
+          elif [ -n "$FALLBACK_URL" ]; then
+            DEMO_SECTION="_Inline preview unavailable — [download demo.webm]($FALLBACK_URL)_"
           elif [ -n "${{ steps.demo-artifact.outputs.artifact-url }}" ]; then
             DEMO_SECTION="_Video upload failed — [download .webm](${{ steps.demo-artifact.outputs.artifact-url }})_"
           else
             DEMO_SECTION="_Demo recording not available (demo step failed)._"
           fi
 
-          COMMENT_BODY="## 🎥 Frontend Tests — ${BADGE}
+          COMMENT_BODY=$(cat <<EOF
+## 🎥 Frontend Tests — ${BADGE}
 
-          **Branch:** \`${{ github.head_ref }}\` → \`main\`
-          **Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+**Branch:** \`${{ github.head_ref }}\` → \`main\`
+**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-          ### 🎬 Demo Recording
+### 🎬 Demo Recording
 
-          ${DEMO_SECTION}
-          "
+${DEMO_SECTION}
+EOF
+)
 
-          # 6. Post the comment to the PR
           gh pr comment $PR_NUMBER --body "$COMMENT_BODY"
 
       - name: Post PR comment — test results and downloads
