@@ -90,14 +90,7 @@ jobs:
             --data-binary @"$COMPRESSED")
           echo "Upload response: $UPLOAD_RESPONSE"
 
-          VIDEO_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin)
-    print(d.get('asset_url') or d.get('url') or d.get('browser_download_url') or '')
-except:
-    print('')
-" 2>/dev/null)
+          VIDEO_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('asset_url') or d.get('url') or d.get('browser_download_url') or '')" 2>/dev/null)
           echo "Extracted video URL: $VIDEO_URL"
 
           # Status line
