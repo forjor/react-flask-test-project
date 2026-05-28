@@ -102,12 +102,14 @@ jobs:
             STATUS_TEXT="Tests failed"
           fi
 
-          # Build and post comment — embed inline if upload succeeded, otherwise link to the run
+          # Build and post comment — use fake video player (thumbnail linking to video) to avoid
+          # GitHub's file-size limits and Markdown security restrictions on inline video embeds.
           {
-            echo "## ${STATUS_ICON} Demo Recording — ${STATUS_TEXT}"
+            echo "### ${STATUS_ICON} Demo Recording — ${STATUS_TEXT}"
+            echo "Watch the video recording below:"
             echo ""
             if [ -n "$VIDEO_URL" ]; then
-              echo "<video src=\"${VIDEO_URL}\" controls muted width=\"800\"></video>"
+              echo "[![Watch the video](https://img.youtube.com/vi/placeholder/maxresdefault.jpg)](${VIDEO_URL})"
               echo ""
               echo "[Direct link](${VIDEO_URL}) &nbsp;|&nbsp; [Run #${RUN_NUMBER}](${RUN_URL})"
             else
