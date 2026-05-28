@@ -11,8 +11,8 @@ jobs:
     if: startsWith(github.head_ref, 'test/')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: write
+      contents: write      # REQUIRED to create a release and upload the video asset
+      pull-requests: write # Required to post the PR comment
 
     steps:
       - name: Checkout
@@ -92,57 +92,16 @@ jobs:
           path: artifacts/demo/demo.webm
           if-no-files-found: warn
 
-      - name: Upload demo video to GitHub for inline playback
-        if: always()
-        id: upload-demo
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          DEMO_VIDEO="artifacts/demo/demo.webm"
-          VIDEO_URL=""
-
-          if [ -f "$DEMO_VIDEO" ]; then
-            # Compress to stay under GitHub's 10 MB inline asset limit
-            COMPRESSED="artifacts/demo/demo-upload.webm"
-            ffmpeg -i "$DEMO_VIDEO" \
-              -c:v libvpx-vp9 -b:v 600k \
-              -c:a libopus -b:a 64k \
-              -vf "scale=1280:-2" \
-              "$COMPRESSED" 2>/dev/null \
-              && DEMO_VIDEO="$COMPRESSED"
-
-            OWNER="${{ github.repository_owner }}"
-            REPO="${{ github.event.repository.name }}"
-            PR_NUM="${{ github.event.pull_request.number }}"
-            FILE_SIZE=$(wc -c < "$DEMO_VIDEO")
-            MAX_SIZE=10485760  # 10 MB
-
-            if [ "$FILE_SIZE" -le "$MAX_SIZE" ]; then
-              RESPONSE=$(curl -sS \
-                -H "Accept: application/vnd.github+json" \
-                -H "Authorization: Bearer $GH_TOKEN" \
-                -F "file=@$DEMO_VIDEO;type=video/webm" \
-                "https://uploads.github.com/repos/$OWNER/$REPO/issues/$PR_NUM/assets?name=demo.webm")
-
-              VIDEO_URL=$(echo "$RESPONSE" | jq -r '.url // empty' 2>/dev/null)
-
-              if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
-                echo "::warning::Demo video upload failed: $RESPONSE"
-                VIDEO_URL=""
-              fi
-            else
-              echo "::warning::Demo video too large for inline upload (${FILE_SIZE} bytes > ${MAX_SIZE} bytes)"
-            fi
-          else
-            echo "::warning::artifacts/demo/demo.webm not found — demo step may have failed"
-          fi
-
-          echo "video_url=$VIDEO_URL" >> "$GITHUB_OUTPUT"
-
-      - name: Post PR comment — demo video
+      - name: Upload demo video to release and post comment
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          # Update to the local path of your newly generated video
+          LOCAL_VIDEO_PATH: "artifacts/demo/demo.webm"
+          # A generic tag to group all automated PR assets
+          RELEASE_TAG: "automated-pr-assets"
         run: |
           if [ "${{ steps.tests.outcome }}" = "success" ]; then
             BADGE="✅ All tests passed"
@@ -150,18 +109,48 @@ jobs:
             BADGE="❌ Tests failed"
           fi
 
-          # Demo video section — inline embed if upload succeeded, download link otherwise
-          VIDEO_URL="${{ steps.upload-demo.outputs.video_url }}"
+          VIDEO_URL=""
+          if [ -f "$LOCAL_VIDEO_PATH" ]; then
+            # Compress to reduce file size for faster loading
+            COMPRESSED="artifacts/demo/demo-upload.webm"
+            ffmpeg -i "$LOCAL_VIDEO_PATH" \
+              -c:v libvpx-vp9 -b:v 600k \
+              -c:a libopus -b:a 64k \
+              -vf "scale=1280:-2" \
+              "$COMPRESSED" 2>/dev/null \
+              && LOCAL_VIDEO_PATH="$COMPRESSED"
+
+            # 1. Rename the video file to include the PR number to prevent collisions
+            ASSET_NAME="pr-${PR_NUMBER}-demo.webm"
+            cp "$LOCAL_VIDEO_PATH" "$ASSET_NAME"
+
+            # 2. Ensure our "storage locker" release exists.
+            # We use --prerelease so it doesn't trigger "Latest Release" notifications.
+            gh release view "$RELEASE_TAG" > /dev/null 2>&1 || \
+              gh release create "$RELEASE_TAG" \
+                --title "Automated PR Assets" \
+                --notes "Storage locker for automated PR videos and images." \
+                --prerelease
+
+            # 3. Upload the asset (--clobber overwrites previous uploads for this specific PR)
+            gh release upload "$RELEASE_TAG" "$ASSET_NAME" --clobber
+
+            # 4. Construct the direct download URL for the release asset
+            VIDEO_URL="https://github.com/$REPO/releases/download/$RELEASE_TAG/$ASSET_NAME"
+          else
+            echo "::warning::artifacts/demo/demo.webm not found — demo step may have failed"
+          fi
+
+          # 5. Create the markdown body
           if [ -n "$VIDEO_URL" ]; then
-            DEMO_SECTION="${VIDEO_URL}"
+            DEMO_SECTION="<video src=\"$VIDEO_URL\" controls=\"controls\" muted=\"muted\" width=\"600\"></video>"
           elif [ -n "${{ steps.demo-artifact.outputs.artifact-url }}" ]; then
             DEMO_SECTION="_Video upload failed — [download .webm](${{ steps.demo-artifact.outputs.artifact-url }})_"
           else
             DEMO_SECTION="_Demo recording not available (demo step failed)._"
           fi
 
-          cat > /tmp/pr-comment-demo.md <<COMMENT
-          ## 🎥 Frontend Tests — ${BADGE}
+          COMMENT_BODY="## 🎥 Frontend Tests — ${BADGE}
 
           **Branch:** \`${{ github.head_ref }}\` → \`main\`
           **Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
@@ -169,9 +158,10 @@ jobs:
           ### 🎬 Demo Recording
 
           ${DEMO_SECTION}
-          COMMENT
+          "
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/pr-comment-demo.md
+          # 6. Post the comment to the PR
+          gh pr comment $PR_NUMBER --body "$COMMENT_BODY"
 
       - name: Post PR comment — test results and downloads
         if: always()
