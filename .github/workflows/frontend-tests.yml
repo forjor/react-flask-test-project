@@ -114,18 +114,26 @@ jobs:
             OWNER="${{ github.repository_owner }}"
             REPO="${{ github.event.repository.name }}"
             PR_NUM="${{ github.event.pull_request.number }}"
+            FILE_SIZE=$(wc -c < "$DEMO_VIDEO")
+            MAX_SIZE=10485760  # 10 MB
 
-            RESPONSE=$(curl -sS \
-              -H "Accept: application/vnd.github+json" \
-              -H "Authorization: Bearer $GH_TOKEN" \
-              -F "data=@$DEMO_VIDEO;type=video/webm" \
-              "https://uploads.github.com/repos/$OWNER/$REPO/issues/$PR_NUM/assets?name=demo.webm")
+            if [ "$FILE_SIZE" -le "$MAX_SIZE" ]; then
+              RESPONSE=$(curl -sS \
+                -H "Accept: application/vnd.github+json" \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Content-Type: video/webm" \
+                -H "Content-Length: $FILE_SIZE" \
+                --data-binary "@$DEMO_VIDEO" \
+                "https://uploads.github.com/repos/$OWNER/$REPO/issues/$PR_NUM/assets?name=demo.webm")
 
-            VIDEO_URL=$(echo "$RESPONSE" | jq -r '.url // empty' 2>/dev/null)
+              VIDEO_URL=$(echo "$RESPONSE" | jq -r '.url // empty' 2>/dev/null)
 
-            if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
-              echo "::warning::Demo video upload failed: $RESPONSE"
-              VIDEO_URL=""
+              if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
+                echo "::warning::Demo video upload failed: $RESPONSE"
+                VIDEO_URL=""
+              fi
+            else
+              echo "::warning::Demo video too large for inline upload (${FILE_SIZE} bytes > ${MAX_SIZE} bytes)"
             fi
           else
             echo "::warning::artifacts/demo/demo.webm not found — demo step may have failed"
@@ -133,7 +141,7 @@ jobs:
 
           echo "video_url=$VIDEO_URL" >> "$GITHUB_OUTPUT"
 
-      - name: Post PR comment
+      - name: Post PR comment — demo video
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -143,15 +151,6 @@ jobs:
           else
             BADGE="❌ Tests failed"
           fi
-
-          # Build a row per recorded video
-          VIDEO_ROWS=""
-          while IFS= read -r video; do
-            dir=$(basename "$(dirname "$video")")
-            name="${dir%-chromium}"
-            VIDEO_ROWS="${VIDEO_ROWS}| \`${name}\` |
-          "
-          done < <(find frontend/test-results -name "*.webm" 2>/dev/null | grep -v test-results/demo | sort)
 
           # Demo video section — inline embed if upload succeeded, download link otherwise
           VIDEO_URL="${{ steps.upload-demo.outputs.video_url }}"
@@ -163,7 +162,7 @@ jobs:
             DEMO_SECTION="_Demo recording not available (demo step failed)._"
           fi
 
-          cat > /tmp/pr-comment.md <<COMMENT
+          cat > /tmp/pr-comment-demo.md <<COMMENT
           ## 🎥 Frontend Tests — ${BADGE}
 
           **Branch:** \`${{ github.head_ref }}\` → \`main\`
@@ -172,7 +171,25 @@ jobs:
           ### 🎬 Demo Recording
 
           ${DEMO_SECTION}
+          COMMENT
 
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/pr-comment-demo.md
+
+      - name: Post PR comment — test results and downloads
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Build a row per recorded video
+          VIDEO_ROWS=""
+          while IFS= read -r video; do
+            dir=$(basename "$(dirname "$video")")
+            name="${dir%-chromium}"
+            VIDEO_ROWS="${VIDEO_ROWS}| \`${name}\` |
+          "
+          done < <(find frontend/test-results -name "*.webm" 2>/dev/null | grep -v test-results/demo | sort)
+
+          cat > /tmp/pr-comment-downloads.md <<COMMENT
           ### Recorded tests
 
           | Test |
@@ -188,4 +205,4 @@ jobs:
           | 📊 Playwright HTML report | [Download](${{ steps.playwright-report.outputs.artifact-url }}) |
           COMMENT
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/pr-comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/pr-comment-downloads.md
