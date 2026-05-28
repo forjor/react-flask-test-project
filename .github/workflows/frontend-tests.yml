@@ -45,6 +45,13 @@ jobs:
         env:
           CI: true
 
+      - name: Run demo
+        if: always()
+        id: demo
+        run: make demo
+        env:
+          CI: true
+
       - name: Package recordings
         if: always()
         run: make package-recordings
@@ -76,6 +83,48 @@ jobs:
           path: frontend/playwright-report/
           if-no-files-found: warn
 
+      - name: Upload demo video artifact
+        if: always()
+        id: demo-artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-video
+          path: artifacts/demo/demo.webm
+          if-no-files-found: warn
+
+      - name: Upload demo video to GitHub for inline playback
+        if: always()
+        id: upload-demo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DEMO_VIDEO="artifacts/demo/demo.webm"
+          VIDEO_URL=""
+
+          if [ -f "$DEMO_VIDEO" ]; then
+            OWNER="${{ github.repository_owner }}"
+            REPO="${{ github.event.repository.name }}"
+            PR_NUM="${{ github.event.pull_request.number }}"
+
+            RESPONSE=$(curl -sS \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Content-Type: video/webm" \
+              --data-binary "@$DEMO_VIDEO" \
+              "https://uploads.github.com/repos/$OWNER/$REPO/issues/$PR_NUM/assets?name=demo.webm")
+
+            VIDEO_URL=$(echo "$RESPONSE" | jq -r '.url // empty' 2>/dev/null)
+
+            if [ -z "$VIDEO_URL" ] || [ "$VIDEO_URL" = "null" ]; then
+              echo "::warning::Demo video upload failed: $RESPONSE"
+              VIDEO_URL=""
+            fi
+          else
+            echo "::warning::artifacts/demo/demo.webm not found — demo step may have failed"
+          fi
+
+          echo "video_url=$VIDEO_URL" >> "$GITHUB_OUTPUT"
+
       - name: Post PR comment
         if: always()
         env:
@@ -94,13 +143,27 @@ jobs:
             name="${dir%-chromium}"
             VIDEO_ROWS="${VIDEO_ROWS}| \`${name}\` |
           "
-          done < <(find frontend/test-results -name "*.webm" 2>/dev/null | sort)
+          done < <(find frontend/test-results -name "*.webm" 2>/dev/null | grep -v test-results/demo | sort)
+
+          # Demo video section — inline embed if upload succeeded, download link otherwise
+          VIDEO_URL="${{ steps.upload-demo.outputs.video_url }}"
+          if [ -n "$VIDEO_URL" ]; then
+            DEMO_SECTION="${VIDEO_URL}"
+          elif [ -n "${{ steps.demo-artifact.outputs.artifact-url }}" ]; then
+            DEMO_SECTION="_Video upload failed — [download .webm](${{ steps.demo-artifact.outputs.artifact-url }})_"
+          else
+            DEMO_SECTION="_Demo recording not available (demo step failed)._"
+          fi
 
           cat > /tmp/pr-comment.md <<COMMENT
           ## 🎥 Frontend Tests — ${BADGE}
 
           **Branch:** \`${{ github.head_ref }}\` → \`main\`
           **Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+          ### 🎬 Demo Recording
+
+          ${DEMO_SECTION}
 
           ### Recorded tests
 
@@ -111,6 +174,7 @@ jobs:
 
           | Artifact | Link |
           |----------|------|
+          | 🎬 Demo video (.webm) | [Download](${{ steps.demo-artifact.outputs.artifact-url }}) |
           | 📹 Individual videos (.webm) | [Download](${{ steps.videos.outputs.artifact-url }}) |
           | 📦 Recordings tarball | [Download](${{ steps.recordings.outputs.artifact-url }}) |
           | 📊 Playwright HTML report | [Download](${{ steps.playwright-report.outputs.artifact-url }}) |

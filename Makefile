@@ -4,9 +4,11 @@
         test test-backend test-frontend \
         docker-build docker-up docker-down docker-logs \
         clean \
-        visual-report package-screenshots package-recordings package-artifacts clean-artifacts
+        visual-report package-screenshots package-recordings package-artifacts clean-artifacts \
+        demo
 
 ARTIFACTS_DIR := artifacts
+DEMO_DIR      := $(ARTIFACTS_DIR)/demo
 DATE          := $(shell date +%Y%m%d-%H%M%S)
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
@@ -94,6 +96,18 @@ package-recordings:
 	fi
 
 package-artifacts: package-screenshots package-recordings
+
+demo:
+	@mkdir -p $(DEMO_DIR)
+	cd frontend && npx playwright test tests/ui/demo.spec.js --output=test-results/demo
+	@VIDEO=$$(find frontend/test-results/demo -name "*.webm" 2>/dev/null | head -1); \
+	if [ -n "$$VIDEO" ]; then \
+		cp "$$VIDEO" "$(DEMO_DIR)/demo.webm"; \
+		echo "Demo video: $(DEMO_DIR)/demo.webm"; \
+	else \
+		echo "No demo video found. Ensure ffmpeg is installed: sudo apt-get install -y ffmpeg"; \
+		exit 1; \
+	fi
 
 clean-artifacts:
 	rm -rf $(ARTIFACTS_DIR) frontend/screenshots frontend/test-results frontend/playwright-report
