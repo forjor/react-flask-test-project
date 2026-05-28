@@ -158,16 +158,16 @@ jobs:
           fi
 
           COMMENT_BODY=$(cat <<EOF
-## 🎥 Frontend Tests — ${BADGE}
+          ## 🎥 Frontend Tests — ${BADGE}
 
-**Branch:** \`${{ github.head_ref }}\` → \`main\`
-**Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          **Branch:** \`${{ github.head_ref }}\` → \`main\`
+          **Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-### 🎬 Demo Recording
+          ### 🎬 Demo Recording
 
-${DEMO_SECTION}
-EOF
-)
+          ${DEMO_SECTION}
+          EOF
+          )
 
           gh pr comment $PR_NUMBER --body "$COMMENT_BODY"
 
