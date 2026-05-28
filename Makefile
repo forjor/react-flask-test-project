@@ -10,6 +10,8 @@
 ARTIFACTS_DIR := artifacts
 DEMO_DIR      := $(ARTIFACTS_DIR)/demo
 DATE          := $(shell date +%Y%m%d-%H%M%S)
+# DEMO_SPEED: 1 (fastest — current ~2 s) to 5 (default — ~10 s). Override: make demo DEMO_SPEED=1
+DEMO_SPEED    ?= 5
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 
@@ -99,7 +101,7 @@ package-artifacts: package-screenshots package-recordings
 
 demo:
 	@mkdir -p $(DEMO_DIR)
-	cd frontend && npx playwright test tests/ui/demo.spec.js --output=test-results/demo
+	cd frontend && DEMO_SPEED=$(DEMO_SPEED) npx playwright test tests/ui/demo.spec.js --output=test-results/demo
 	@VIDEO=$$(find frontend/test-results/demo -name "*.webm" 2>/dev/null | head -1); \
 	if [ -n "$$VIDEO" ]; then \
 		cp "$$VIDEO" "$(DEMO_DIR)/demo.webm"; \
