@@ -11,8 +11,8 @@ jobs:
     if: startsWith(github.head_ref, 'test/')
     runs-on: ubuntu-latest
     permissions:
-      contents: read
-      pull-requests: write
+      pull-requests: write # Required to post the PR comment
+      contents: write      # Required to create/upload GitHub release assets for video hosting
 
     steps:
       - name: Checkout
@@ -45,75 +45,108 @@ jobs:
         env:
           CI: true
 
-      - name: Package recordings
+      - name: Run demo
         if: always()
-        run: make package-recordings
+        id: demo
+        run: make demo
+        env:
+          CI: true
 
-      - name: Upload test videos
-        if: always()
-        id: videos
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-videos
-          path: frontend/test-results/**/*.webm
-          if-no-files-found: warn
-
-      - name: Upload recordings tarball
-        if: always()
-        id: recordings
-        uses: actions/upload-artifact@v4
-        with:
-          name: recordings-tarball
-          path: artifacts/recordings-*.tar.gz
-          if-no-files-found: warn
-
-      - name: Upload Playwright report
-        if: always()
-        id: playwright-report
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: frontend/playwright-report/
-          if-no-files-found: warn
-
-      - name: Post PR comment
+      - name: Upload demo video and post PR comment
         if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          TESTS_OUTCOME: ${{ steps.tests.outcome }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if [ "${{ steps.tests.outcome }}" = "success" ]; then
-            BADGE="✅ All tests passed"
-          else
-            BADGE="❌ Tests failed"
+          LOCAL_VIDEO_PATH="artifacts/demo/demo.webm"
+
+          if [ ! -f "$LOCAL_VIDEO_PATH" ]; then
+            echo "No demo video found, skipping PR comment."
+            exit 0
           fi
 
-          # Build a row per recorded video
-          VIDEO_ROWS=""
-          while IFS= read -r video; do
-            dir=$(basename "$(dirname "$video")")
-            name="${dir%-chromium}"
-            VIDEO_ROWS="${VIDEO_ROWS}| \`${name}\` |
-"
-          done < <(find frontend/test-results -name "*.webm" 2>/dev/null | sort)
+          TAG="demo-pr-${PR_NUMBER}"
+          VIDEO_FILE="demo.mp4"
+          THUMB_FILE="demo-thumbnail.jpg"
+          COMPRESSED="/tmp/$VIDEO_FILE"
+          THUMB_PATH="/tmp/$THUMB_FILE"
 
-          cat > /tmp/pr-comment.md <<COMMENT
-          ## 🎥 Frontend Tests — ${BADGE}
+          # Convert to H.264/mp4 — broader browser support and accepted by GitHub release assets
+          echo "Converting video to mp4..."
+          ffmpeg -i "$LOCAL_VIDEO_PATH" \
+            -c:v libx264 -b:v 600k \
+            -c:a aac -b:a 64k \
+            -vf "scale=1280:-2" \
+            -pix_fmt yuv420p \
+            -movflags +faststart \
+            "$COMPRESSED" \
+            || { echo "ffmpeg failed, using original"; cp "$LOCAL_VIDEO_PATH" "$COMPRESSED"; }
 
-          **Branch:** \`${{ github.head_ref }}\` → \`main\`
-          **Run:** [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          # Extract thumbnail at 3 seconds for the clickable preview image
+          echo "Extracting thumbnail..."
+          ffmpeg -i "$COMPRESSED" -ss 00:00:03 -vframes 1 -q:v 2 "$THUMB_PATH" \
+            || ffmpeg -i "$COMPRESSED" -vframes 1 -q:v 2 "$THUMB_PATH" \
+            || true
 
-          ### Recorded tests
+          # Create or update a pre-release for this PR — used as stable video hosting.
+          # Release assets have guaranteed public browser_download_url, unlike issue assets.
+          echo "Creating release $TAG..."
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --prerelease \
+            --title "Demo — PR #${PR_NUMBER}" \
+            --notes "Auto-generated demo recording. Updated on each push to the PR." \
+            2>&1 || true
 
-          | Test |
-          |------|
-          ${VIDEO_ROWS}
-          ### Downloads
+          # Upload video (--clobber replaces any asset from a previous push to this PR)
+          echo "Uploading video..."
+          if gh release upload "$TAG" "$COMPRESSED" --repo "$REPO" --clobber 2>&1; then
+            VIDEO_URL="https://github.com/$REPO/releases/download/$TAG/$VIDEO_FILE"
+          else
+            VIDEO_URL=""
+          fi
+          echo "Video URL: $VIDEO_URL"
 
-          | Artifact | Link |
-          |----------|------|
-          | 📹 Individual videos (.webm) | [Download](${{ steps.videos.outputs.artifact-url }}) |
-          | 📦 Recordings tarball | [Download](${{ steps.recordings.outputs.artifact-url }}) |
-          | 📊 Playwright HTML report | [Download](${{ steps.playwright-report.outputs.artifact-url }}) |
-          COMMENT
+          # Upload thumbnail
+          THUMB_URL=""
+          if [ -f "$THUMB_PATH" ]; then
+            echo "Uploading thumbnail..."
+            if gh release upload "$TAG" "$THUMB_PATH" --repo "$REPO" --clobber 2>&1; then
+              THUMB_URL="https://github.com/$REPO/releases/download/$TAG/$THUMB_FILE"
+            fi
+            echo "Thumbnail URL: $THUMB_URL"
+          fi
 
-          gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/pr-comment.md
+          # Status line
+          if [ "$TESTS_OUTCOME" = "success" ]; then
+            STATUS_ICON="✅"
+            STATUS_TEXT="Tests passed"
+          else
+            STATUS_ICON="❌"
+            STATUS_TEXT="Tests failed"
+          fi
+
+          # Build and post comment — thumbnail-link pattern (click image to open video).
+          # GitHub strips <video> tags from PR comments, so this is the standard approach used
+          # by Cypress, Playwright, and Replay.io for embedding recordings.
+          {
+            echo "## ${STATUS_ICON} Demo Recording — ${STATUS_TEXT}"
+            echo ""
+            if [ -n "$VIDEO_URL" ] && [ -n "$THUMB_URL" ]; then
+              echo "[![Watch the demo](${THUMB_URL})](${VIDEO_URL})"
+              echo ""
+              echo "[Download video](${VIDEO_URL}) &nbsp;|&nbsp; [Run #${RUN_NUMBER}](${RUN_URL})"
+            elif [ -n "$VIDEO_URL" ]; then
+              echo "[Watch the demo recording](${VIDEO_URL})"
+              echo ""
+              echo "[Run #${RUN_NUMBER}](${RUN_URL})"
+            else
+              echo "> Video upload failed — see [Run #${RUN_NUMBER}](${RUN_URL}) for the recording artifact."
+            fi
+          } > /tmp/pr_comment.md
+
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/pr_comment.md

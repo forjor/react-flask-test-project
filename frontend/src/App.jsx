@@ -30,7 +30,7 @@ export default function App() {
     setCreating(true);
     try {
       const newCat = await createCat(name);
-      setCats((prev) => [newCat, ...prev]);
+      setCats((prev) => [...prev, newCat]);
     } catch {
       setError("Failed to create cat.");
     } finally {
