@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write # Required to post the PR comment
-      issues: write        # Required to upload issue assets (video/thumbnail)
+      contents: write      # Required to create/upload GitHub release assets for video hosting
 
     steps:
       - name: Checkout
@@ -63,49 +63,61 @@ jobs:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           LOCAL_VIDEO_PATH="artifacts/demo/demo.webm"
-          ASSET_NAME="pr-${PR_NUMBER}-demo.webm"
 
           if [ ! -f "$LOCAL_VIDEO_PATH" ]; then
             echo "No demo video found, skipping PR comment."
             exit 0
           fi
 
-          # Compress video for faster loading
-          COMPRESSED="/tmp/${ASSET_NAME}"
+          TAG="demo-pr-${PR_NUMBER}"
+          VIDEO_FILE="demo.mp4"
+          THUMB_FILE="demo-thumbnail.jpg"
+          COMPRESSED="/tmp/$VIDEO_FILE"
+          THUMB_PATH="/tmp/$THUMB_FILE"
+
+          # Convert to H.264/mp4 — broader browser support and accepted by GitHub release assets
+          echo "Converting video to mp4..."
           ffmpeg -i "$LOCAL_VIDEO_PATH" \
-            -c:v libvpx-vp9 -b:v 600k \
-            -c:a libopus -b:a 64k \
+            -c:v libx264 -b:v 600k \
+            -c:a aac -b:a 64k \
             -vf "scale=1280:-2" \
-            "$COMPRESSED" 2>/dev/null \
-            || cp "$LOCAL_VIDEO_PATH" "$COMPRESSED"
+            -pix_fmt yuv420p \
+            -movflags +faststart \
+            "$COMPRESSED" \
+            || { echo "ffmpeg failed, using original"; cp "$LOCAL_VIDEO_PATH" "$COMPRESSED"; }
 
-          # Extract a thumbnail at 3 seconds for the clickable preview image
-          THUMB_PATH="/tmp/pr-${PR_NUMBER}-thumbnail.jpg"
-          ffmpeg -i "$COMPRESSED" -ss 00:00:03 -vframes 1 -q:v 2 "$THUMB_PATH" 2>/dev/null \
-            || ffmpeg -i "$COMPRESSED" -vframes 1 -q:v 2 "$THUMB_PATH" 2>/dev/null
+          # Extract thumbnail at 3 seconds for the clickable preview image
+          echo "Extracting thumbnail..."
+          ffmpeg -i "$COMPRESSED" -ss 00:00:03 -vframes 1 -q:v 2 "$THUMB_PATH" \
+            || ffmpeg -i "$COMPRESSED" -vframes 1 -q:v 2 "$THUMB_PATH" \
+            || true
 
-          upload_asset() {
-            local file="$1" content_type="$2" name="$3"
-            curl -s -X POST \
-              -H "Authorization: token $GH_TOKEN" \
-              -H "Accept: application/vnd.github+json" \
-              -H "Content-Type: $content_type" \
-              "https://uploads.github.com/repos/$REPO/issues/$PR_NUMBER/assets?name=$name" \
-              --data-binary @"$file"
-          }
+          # Create or update a pre-release for this PR — used as stable video hosting.
+          # Release assets have guaranteed public browser_download_url, unlike issue assets.
+          echo "Creating release $TAG..."
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --prerelease \
+            --title "Demo — PR #${PR_NUMBER}" \
+            --notes "Auto-generated demo recording. Updated on each push to the PR." \
+            2>&1 || true
 
+          # Upload video (--clobber replaces any asset from a previous push to this PR)
           echo "Uploading video..."
-          VIDEO_RESP=$(upload_asset "$COMPRESSED" "video/webm" "$ASSET_NAME")
-          echo "Video upload response: $VIDEO_RESP"
-          VIDEO_URL=$(echo "$VIDEO_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('browser_download_url') or d.get('url') or '')" 2>/dev/null)
+          if gh release upload "$TAG" "$COMPRESSED" --repo "$REPO" --clobber 2>&1; then
+            VIDEO_URL="https://github.com/$REPO/releases/download/$TAG/$VIDEO_FILE"
+          else
+            VIDEO_URL=""
+          fi
           echo "Video URL: $VIDEO_URL"
 
+          # Upload thumbnail
           THUMB_URL=""
           if [ -f "$THUMB_PATH" ]; then
             echo "Uploading thumbnail..."
-            THUMB_RESP=$(upload_asset "$THUMB_PATH" "image/jpeg" "pr-${PR_NUMBER}-thumbnail.jpg")
-            echo "Thumbnail upload response: $THUMB_RESP"
-            THUMB_URL=$(echo "$THUMB_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('browser_download_url') or d.get('url') or '')" 2>/dev/null)
+            if gh release upload "$TAG" "$THUMB_PATH" --repo "$REPO" --clobber 2>&1; then
+              THUMB_URL="https://github.com/$REPO/releases/download/$TAG/$THUMB_FILE"
+            fi
             echo "Thumbnail URL: $THUMB_URL"
           fi
 
@@ -137,4 +149,4 @@ jobs:
             fi
           } > /tmp/pr_comment.md
 
-          gh pr comment "$PR_NUMBER" --body-file /tmp/pr_comment.md
+          gh pr comment "$PR_NUMBER" --repo "$REPO" --body-file /tmp/pr_comment.md
