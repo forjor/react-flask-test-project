@@ -11,7 +11,8 @@ jobs:
     if: startsWith(github.head_ref, 'test/')
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write # Required to post the PR comment and upload issue assets
+      pull-requests: write # Required to post the PR comment
+      issues: write        # Required to upload issue assets (video/thumbnail)
 
     steps:
       - name: Checkout
@@ -78,20 +79,35 @@ jobs:
             "$COMPRESSED" 2>/dev/null \
             || cp "$LOCAL_VIDEO_PATH" "$COMPRESSED"
 
-          # Upload to GitHub's issue assets endpoint — this is what the web UI drag-drop uses and
-          # is the only route that produces a https://github.com/user-attachments/assets/ URL,
-          # which GitHub will render as an inline video player in PR comments.
-          echo "Uploading video to GitHub issue assets API..."
-          UPLOAD_RESPONSE=$(curl -s -X POST \
-            -H "Authorization: token $GH_TOKEN" \
-            -H "Accept: application/vnd.github+json" \
-            -H "Content-Type: video/webm" \
-            "https://uploads.github.com/repos/$REPO/issues/$PR_NUMBER/assets?name=$ASSET_NAME" \
-            --data-binary @"$COMPRESSED")
-          echo "Upload response: $UPLOAD_RESPONSE"
+          # Extract a thumbnail at 3 seconds for the clickable preview image
+          THUMB_PATH="/tmp/pr-${PR_NUMBER}-thumbnail.jpg"
+          ffmpeg -i "$COMPRESSED" -ss 00:00:03 -vframes 1 -q:v 2 "$THUMB_PATH" 2>/dev/null \
+            || ffmpeg -i "$COMPRESSED" -vframes 1 -q:v 2 "$THUMB_PATH" 2>/dev/null
 
-          VIDEO_URL=$(echo "$UPLOAD_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('asset_url') or d.get('url') or d.get('browser_download_url') or '')" 2>/dev/null)
-          echo "Extracted video URL: $VIDEO_URL"
+          upload_asset() {
+            local file="$1" content_type="$2" name="$3"
+            curl -s -X POST \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -H "Content-Type: $content_type" \
+              "https://uploads.github.com/repos/$REPO/issues/$PR_NUMBER/assets?name=$name" \
+              --data-binary @"$file"
+          }
+
+          echo "Uploading video..."
+          VIDEO_RESP=$(upload_asset "$COMPRESSED" "video/webm" "$ASSET_NAME")
+          echo "Video upload response: $VIDEO_RESP"
+          VIDEO_URL=$(echo "$VIDEO_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('browser_download_url') or d.get('url') or '')" 2>/dev/null)
+          echo "Video URL: $VIDEO_URL"
+
+          THUMB_URL=""
+          if [ -f "$THUMB_PATH" ]; then
+            echo "Uploading thumbnail..."
+            THUMB_RESP=$(upload_asset "$THUMB_PATH" "image/jpeg" "pr-${PR_NUMBER}-thumbnail.jpg")
+            echo "Thumbnail upload response: $THUMB_RESP"
+            THUMB_URL=$(echo "$THUMB_RESP" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('browser_download_url') or d.get('url') or '')" 2>/dev/null)
+            echo "Thumbnail URL: $THUMB_URL"
+          fi
 
           # Status line
           if [ "$TESTS_OUTCOME" = "success" ]; then
@@ -102,16 +118,20 @@ jobs:
             STATUS_TEXT="Tests failed"
           fi
 
-          # Build and post comment — use fake video player (thumbnail linking to video) to avoid
-          # GitHub's file-size limits and Markdown security restrictions on inline video embeds.
+          # Build and post comment — thumbnail-link pattern (click image to open video).
+          # GitHub strips <video> tags from PR comments, so this is the standard approach used
+          # by Cypress, Playwright, and Replay.io for embedding recordings.
           {
-            echo "### ${STATUS_ICON} Demo Recording — ${STATUS_TEXT}"
-            echo "Watch the video recording below:"
+            echo "## ${STATUS_ICON} Demo Recording — ${STATUS_TEXT}"
             echo ""
-            if [ -n "$VIDEO_URL" ]; then
-              echo "[![Watch the video](https://img.youtube.com/vi/placeholder/maxresdefault.jpg)](${VIDEO_URL})"
+            if [ -n "$VIDEO_URL" ] && [ -n "$THUMB_URL" ]; then
+              echo "[![Watch the demo](${THUMB_URL})](${VIDEO_URL})"
               echo ""
-              echo "[Direct link](${VIDEO_URL}) &nbsp;|&nbsp; [Run #${RUN_NUMBER}](${RUN_URL})"
+              echo "[Download video](${VIDEO_URL}) &nbsp;|&nbsp; [Run #${RUN_NUMBER}](${RUN_URL})"
+            elif [ -n "$VIDEO_URL" ]; then
+              echo "[Watch the demo recording](${VIDEO_URL})"
+              echo ""
+              echo "[Run #${RUN_NUMBER}](${RUN_URL})"
             else
               echo "> Video upload failed — see [Run #${RUN_NUMBER}](${RUN_URL}) for the recording artifact."
             fi
